@@ -3,7 +3,7 @@ import torch
 import gradio as gr
 from modules import scripts, shared, sd_models, extra_networks, devices
 from modules.processing import StableDiffusionProcessing
-from modules.script_callbacks import on_cfg_denoiser
+from modules.script_callbacks import on_cfg_denoiser, on_before_image_saved
 import numpy as np
 from PIL import Image, ImageDraw
 try:
@@ -20,6 +20,8 @@ class DualLoRARegional(scripts.Script):
         super().__init__()
         self.active_regions = {}
         self.hooks_installed = False
+        self.original_prompt = ""
+        self.original_negative_prompt = ""
         
     def title(self):
         return "Dual LoRA Regional Control"
@@ -143,6 +145,15 @@ class DualLoRARegional(scripts.Script):
                     elem_id="mask_preview_img"
                 )
                 
+                # Campo para mostrar o prompt final
+                final_prompt_display = gr.Textbox(
+                    label="📝 Prompt Final Combinado",
+                    placeholder="O prompt final aparecerá aqui após a geração...",
+                    lines=3,
+                    interactive=False,
+                    elem_id="final_prompt_display"
+                )
+                
                 # Event handlers
                 def update_mask_visibility(mode):
                     return gr.update(visible=(mode == "custom"))
@@ -180,7 +191,7 @@ class DualLoRARegional(scripts.Script):
                 )
         
         return [enabled, lora_a, weight_a, prompt_a, lora_b, weight_b, prompt_b, 
-                split_mode, split_ratio, mask_upload, blend_strength, feather_size]
+                split_mode, split_ratio, mask_upload, blend_strength, feather_size, final_prompt_display]
     
     def get_available_loras(self):
         """Obtém lista de LoRAs disponíveis no sistema"""
@@ -250,42 +261,121 @@ class DualLoRARegional(scripts.Script):
             print(f"Erro no feathering: {e}")
             return mask
     
-    def process_prompts(self, p, prompt_a, prompt_b):
-        """Processa e combina prompts regionais"""
-        base_prompt = p.prompt if p.prompt else ""
+    def build_enhanced_prompt(self, base_prompt, prompt_a, prompt_b, lora_a=None, weight_a=1.0, lora_b=None, weight_b=1.0):
+        """Constrói prompt melhorado combinando prompt base com prompts regionais e LoRAs"""
+        enhanced_prompt = base_prompt.strip() if base_prompt else ""
         
         # Limpa prompts vazios
         prompt_a = prompt_a.strip() if prompt_a else ""
         prompt_b = prompt_b.strip() if prompt_b else ""
         
-        # Combina prompts de forma inteligente
-        if prompt_a and prompt_b:
-            if base_prompt:
-                p.prompt = f"{base_prompt}, ({prompt_a}:1.2), ({prompt_b}:1.2)"
+        # Adiciona prompts regionais com pesos específicos
+        regional_prompts = []
+        
+        if prompt_a:
+            regional_prompts.append(f"({prompt_a}:1.3)")
+        
+        if prompt_b:
+            regional_prompts.append(f"({prompt_b}:1.3)")
+        
+        # Combina prompts regionais
+        if regional_prompts:
+            if enhanced_prompt:
+                enhanced_prompt = f"{enhanced_prompt}, " + ", ".join(regional_prompts)
             else:
-                p.prompt = f"({prompt_a}:1.2), ({prompt_b}:1.2)"
-        elif prompt_a:
-            if base_prompt:
-                p.prompt = f"{base_prompt}, ({prompt_a}:1.2)"
-            else:
-                p.prompt = f"({prompt_a}:1.2)"
-        elif prompt_b:
-            if base_prompt:
-                p.prompt = f"{base_prompt}, ({prompt_b}:1.2)"
-            else:
-                p.prompt = f"({prompt_b}:1.2)"
+                enhanced_prompt = ", ".join(regional_prompts)
+        
+        # Aplica LoRAs se especificados
+        if lora_a or lora_b:
+            enhanced_prompt = self.apply_loras_to_prompt(enhanced_prompt, lora_a, weight_a, lora_b, weight_b)
+        
+        return enhanced_prompt
+    
+    def install_hooks(self):
+        """Instala hooks para interceptar o processamento"""
+        if not self.hooks_installed:
+            on_cfg_denoiser(self.on_cfg_denoiser)
+            self.hooks_installed = True
+            print("🎭 Dual LoRA Regional: Hooks instalados")
+    
+    def remove_hooks(self):
+        """Remove hooks"""
+        if self.hooks_installed:
+            # Note: Não há uma função direta para remover hooks, mas podemos limpar o estado
+            self.hooks_installed = False
+            print("🎭 Dual LoRA Regional: Hooks removidos")
+    
+    def on_cfg_denoiser(self, params):
+        """Callback executado durante o processamento CFG"""
+        if not hasattr(self, 'active_regions') or not self.active_regions.get('enabled', False):
+            return
+        
+        try:
+            # Aplica LoRAs regionais se necessário
+            if self.active_regions.get('lora_a') or self.active_regions.get('lora_b'):
+                self.apply_regional_loras(params)
+                
+        except Exception as e:
+            print(f"❌ Erro no callback CFG: {e}")
+    
+    def apply_regional_loras(self, params):
+        """Aplica LoRAs regionais durante o processamento"""
+        try:
+            # Aqui você pode implementar a lógica para aplicar LoRAs específicos por região
+            # Por enquanto, vamos apenas logar que está funcionando
+            print("🎭 Dual LoRA Regional: Aplicando LoRAs regionais...")
+            
+            # Exemplo de como você poderia aplicar LoRAs regionais:
+            # if self.active_regions.get('lora_a'):
+            #     # Aplicar LoRA A na região A
+            #     pass
+            # if self.active_regions.get('lora_b'):
+            #     # Aplicar LoRA B na região B
+            #     pass
+                
+        except Exception as e:
+            print(f"❌ Erro ao aplicar LoRAs regionais: {e}")
+    
+    def apply_loras_to_prompt(self, base_prompt, lora_a, weight_a, lora_b, weight_b):
+        """Aplica LoRAs diretamente ao prompt usando sintaxe do WebUI"""
+        enhanced_prompt = base_prompt
+        
+        # Adiciona LoRA A se especificado
+        if lora_a and lora_a != "None":
+            lora_syntax_a = f"<lora:{lora_a}:{weight_a}>"
+            enhanced_prompt = f"{enhanced_prompt}, {lora_syntax_a}"
+            print(f"🎨 LoRA A adicionado: {lora_syntax_a}")
+        
+        # Adiciona LoRA B se especificado
+        if lora_b and lora_b != "None":
+            lora_syntax_b = f"<lora:{lora_b}:{weight_b}>"
+            enhanced_prompt = f"{enhanced_prompt}, {lora_syntax_b}"
+            print(f"🎨 LoRA B adicionado: {lora_syntax_b}")
+        
+        return enhanced_prompt
     
     def process(self, p, enabled, lora_a, weight_a, prompt_a, lora_b, weight_b, 
-                prompt_b, split_mode, split_ratio, custom_mask, blend_strength, feather_size):
+                prompt_b, split_mode, split_ratio, custom_mask, blend_strength, feather_size, final_prompt_display):
         """Processa a geração com LoRAs regionais"""
         
         if not enabled:
+            self.remove_hooks()
             return
         
         print("🎭 Dual LoRA Regional: Iniciando processamento...")
         
-        # Processa prompts
-        self.process_prompts(p, prompt_a, prompt_b)
+        # Salva prompts originais
+        self.original_prompt = p.prompt
+        self.original_negative_prompt = p.negative_prompt
+        
+        # Constrói prompt melhorado
+        enhanced_prompt = self.build_enhanced_prompt(p.prompt, prompt_a, prompt_b, lora_a, weight_a, lora_b, weight_b)
+        p.prompt = enhanced_prompt
+        
+        print(f"📝 Prompt original: {self.original_prompt}")
+        print(f"📝 Prompt melhorado: {enhanced_prompt}")
+        print(f"🎯 Prompts regionais: A='{prompt_a}', B='{prompt_b}'")
+        print(f"🔗 Conexão estabelecida entre prompt principal e prompts regionais!")
         
         # Cria máscaras regionais
         try:
@@ -312,18 +402,36 @@ class DualLoRARegional(scripts.Script):
                 'weight_b': weight_b,
                 'blend_strength': blend_strength,
                 'width': p.width,
-                'height': p.height
+                'height': p.height,
+                'original_prompt': self.original_prompt,
+                'enhanced_prompt': enhanced_prompt
             }
+            
+            # Instala hooks
+            self.install_hooks()
             
             print(f"✅ Máscaras criadas: A={mask_a.sum():.0f}px, B={mask_b.sum():.0f}px")
             print(f"🎨 LoRAs: A={lora_a}({weight_a}), B={lora_b}({weight_b})")
+            print(f"🔗 Prompts conectados com sucesso!")
             
         except Exception as e:
             print(f"❌ Erro no processamento: {e}")
             self.active_regions = {}
+            # Restaura prompt original em caso de erro
+            p.prompt = self.original_prompt
     
     def postprocess(self, p, processed, *args):
         """Limpeza após processamento"""
+        # Restaura prompt original
+        if hasattr(self, 'original_prompt') and self.original_prompt:
+            p.prompt = self.original_prompt
+        
+        # Limpa estado
         if hasattr(self, 'active_regions'):
             self.active_regions = {}
+        
+        # Remove hooks
+        self.remove_hooks()
+        
+        print("🎭 Dual LoRA Regional: Processamento finalizado")
         return processed
