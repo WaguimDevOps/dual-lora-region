@@ -295,17 +295,56 @@ class DualLoRARegional(scripts.Script):
         
         # Adiciona LoRA A se especificado
         if lora_a and lora_a != "None":
-            lora_syntax_a = f"<lora:{lora_a}:{weight_a}>"
+            # Remove a extensão do arquivo se presente
+            lora_name = lora_a
+            if lora_name.lower().endswith(('.safetensors', '.ckpt', '.pt', '.bin')):
+                lora_name = os.path.splitext(lora_name)[0]
+            
+            lora_syntax_a = f"<lora:{lora_name}:{weight_a}>"
             enhanced_prompt = f"{enhanced_prompt}, {lora_syntax_a}"
             print(f"🎨 LoRA A adicionado: {lora_syntax_a}")
         
         # Adiciona LoRA B se especificado
         if lora_b and lora_b != "None":
-            lora_syntax_b = f"<lora:{lora_b}:{weight_b}>"
+            # Remove a extensão do arquivo se presente
+            lora_name = lora_b
+            if lora_name.lower().endswith(('.safetensors', '.ckpt', '.pt', '.bin')):
+                lora_name = os.path.splitext(lora_name)[0]
+            
+            lora_syntax_b = f"<lora:{lora_name}:{weight_b}>"
             enhanced_prompt = f"{enhanced_prompt}, {lora_syntax_b}"
             print(f"🎨 LoRA B adicionado: {lora_syntax_b}")
         
         return enhanced_prompt
+    
+    def apply_loras_via_extra_networks(self, p, lora_a, weight_a, lora_b, weight_b):
+        """Aplica LoRAs via sistema extra_networks do WebUI"""
+        try:
+            # Verifica se o sistema extra_networks está disponível
+            if hasattr(extra_networks, 'lora'):
+                # Aplica LoRA A
+                if lora_a and lora_a != "None":
+                    lora_name = lora_a
+                    if lora_name.lower().endswith(('.safetensors', '.ckpt', '.pt', '.bin')):
+                        lora_name = os.path.splitext(lora_name)[0]
+                    
+                    # Adiciona via extra_networks
+                    extra_networks.lora.load_networks([lora_name], [weight_a])
+                    print(f"🎨 LoRA A aplicado via extra_networks: {lora_name}:{weight_a}")
+                
+                # Aplica LoRA B
+                if lora_b and lora_b != "None":
+                    lora_name = lora_b
+                    if lora_name.lower().endswith(('.safetensors', '.ckpt', '.pt', '.bin')):
+                        lora_name = os.path.splitext(lora_name)[0]
+                    
+                    # Adiciona via extra_networks
+                    extra_networks.lora.load_networks([lora_name], [weight_b])
+                    print(f"🎨 LoRA B aplicado via extra_networks: {lora_name}:{weight_b}")
+                    
+        except Exception as e:
+            print(f"⚠️ Erro ao aplicar LoRAs via extra_networks: {e}")
+            print("📝 Continuando apenas com sintaxe no prompt...")
     
     def process(self, p, enabled, lora_a, weight_a, prompt_a, lora_b, weight_b, 
                 prompt_b, split_mode, split_ratio, custom_mask, blend_strength, feather_size, final_prompt_display):
@@ -323,12 +362,17 @@ class DualLoRARegional(scripts.Script):
         # Constrói prompt melhorado
         enhanced_prompt = self.build_enhanced_prompt(p.prompt, prompt_a, prompt_b, lora_a, weight_a, lora_b, weight_b)
         
+        # Aplica LoRAs via extra_networks como backup
+        self.apply_loras_via_extra_networks(p, lora_a, weight_a, lora_b, weight_b)
+        
         # Aplica o prompt melhorado de forma mais robusta
         p.prompt = enhanced_prompt
         
         # Força a aplicação do prompt modificado em múltiplos locais
         if hasattr(p, 'all_prompts') and p.all_prompts:
-            p.all_prompts[0] = enhanced_prompt
+            # Aplica para todas as imagens do batch
+            for i in range(len(p.all_prompts)):
+                p.all_prompts[i] = enhanced_prompt
         
         # Verifica se o prompt foi aplicado corretamente
         print(f"📝 Prompt original: {self.original_prompt}")
@@ -340,7 +384,8 @@ class DualLoRARegional(scripts.Script):
             print("⚠️ Prompt não foi aplicado corretamente, forçando novamente...")
             p.prompt = enhanced_prompt
             if hasattr(p, 'all_prompts') and p.all_prompts:
-                p.all_prompts[0] = enhanced_prompt
+                for i in range(len(p.all_prompts)):
+                    p.all_prompts[i] = enhanced_prompt
             print(f"📝 Prompt após correção: {p.prompt}")
         
         print(f"🎯 Prompts regionais: A='{prompt_a}', B='{prompt_b}'")
@@ -378,12 +423,17 @@ class DualLoRARegional(scripts.Script):
         # Constrói prompt melhorado novamente
         enhanced_prompt = self.build_enhanced_prompt(p.prompt, prompt_a, prompt_b, lora_a, weight_a, lora_b, weight_b)
         
-        # Força a aplicação do prompt
+        # Aplica LoRAs via extra_networks novamente para garantir
+        self.apply_loras_via_extra_networks(p, lora_a, weight_a, lora_b, weight_b)
+        
+        # Força a aplicação do prompt para todas as imagens do batch
         p.prompt = enhanced_prompt
         if hasattr(p, 'all_prompts') and p.all_prompts:
-            p.all_prompts[0] = enhanced_prompt
+            for i in range(len(p.all_prompts)):
+                p.all_prompts[i] = enhanced_prompt
         
-        print(f"🔄 Before batch - Prompt aplicado: {p.prompt}")
+        print(f"🔄 Before batch - Prompt aplicado para {len(p.all_prompts) if hasattr(p, 'all_prompts') else 1} imagens: {p.prompt}")
+        print(f"🔄 Before batch - LoRAs aplicados: A={lora_a}({weight_a}), B={lora_b}({weight_b})")
     
     def postprocess(self, p, processed, *args):
         """Limpeza após processamento"""
